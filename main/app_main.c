@@ -30,10 +30,62 @@
 #include "esp_log.h"
 #include "mqtt_client.h"
 
-#define LED1 23
-#define LED2 22
-
 static const char *TAG = "MQTT_EXAMPLE";
+
+#define BUTTON1_PIN 21
+#define BUTTON2_PIN 22
+#define LED1_PIN 5
+#define LED2_PIN 4
+
+int state = 0;
+xQueueHandle interputQueue1;
+xQueueHandle interputQueue2;
+esp_mqtt_client_handle_t mqtt_client;
+
+// interrupt service handler
+static void IRAM_ATTR gpio_interrupt_handler(void *args)
+{
+    int pinNumber = (int)args;
+    xQueueSendFromISR(interputQueue1, &pinNumber, NULL);
+}
+
+static void IRAM_ATTR gpio_interrupt_handler2(void *args)
+{
+    int pinNumber = (int)args;
+    xQueueSendFromISR(interputQueue2, &pinNumber, NULL);
+}
+// LED control task, received button prerssed from ISR
+void LED_Control_Task(void *params)
+{
+    int pinNumber = 0;
+    char data[3];
+    while (true)
+    {
+        if (xQueueReceive(interputQueue1, &pinNumber, portMAX_DELAY))
+        {
+            gpio_set_level(LED1_PIN, gpio_get_level(LED1_PIN) == 0);
+            printf("GPIO %d was pressed. The state is %d\n", pinNumber, gpio_get_level(LED1_PIN));
+            sprintf(data, "%d", gpio_get_level(LED1_PIN));                         // <-- แปลงสถานะของ LED  (int) เป็น string
+            esp_mqtt_client_publish(mqtt_client, "/stu_161/lamp1", data, 0, 0, 0); // <-- publish ไปยัง broker
+        }
+    }
+}
+
+void LED2_Control_Task(void *params)
+{
+    int pinNumber = 0;
+    char data[3];
+    while (true)
+    {
+        if (xQueueReceive(interputQueue2, &pinNumber, portMAX_DELAY))
+        {
+            gpio_set_level(LED2_PIN, gpio_get_level(LED2_PIN) == 0);
+            printf("GPIO %d was pressed. The state is %d\n", pinNumber, gpio_get_level(LED1_PIN));
+            sprintf(data, "%d", gpio_get_level(LED2_PIN));                         // <-- แปลงสถานะของ LED  (int) เป็น string
+            esp_mqtt_client_publish(mqtt_client, "/stu_161/lamp2", data, 0, 0, 0); // <-- publish ไปยัง broker
+        }
+    }
+}
 
 static void log_error_if_nonzero(const char *message, int error_code)
 {
@@ -62,26 +114,26 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     switch ((esp_mqtt_event_id_t)event_id)
     {
     case MQTT_EVENT_CONNECTED:
-        // ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
-        // msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 0);
-        // ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
+        ESP_LOGI(TAG, "MQTT_EVENT_CONNECTED");
+        msg_id = esp_mqtt_client_publish(client, "/topic/qos1", "data_3", 0, 1, 0);
+        ESP_LOGI(TAG, "sent publish successful, msg_id=%d", msg_id);
 
-        // msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
-        // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos0", 0);
+        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
-        // msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
-        // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+        msg_id = esp_mqtt_client_subscribe(client, "/topic/qos1", 1);
+        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
 
-        // msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
-        // ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
         msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
         ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
+        // msg_id = esp_mqtt_client_unsubscribe(client, "/topic/qos1");
+        // ESP_LOGI(TAG, "sent unsubscribe successful, msg_id=%d", msg_id);
 
-        // เพิ่มบรรทัดต่อไปนี้ โดยตั้งขื่อเป็น stu-<เลข 3 ตัวท้ายของรหัสนักศึกษา>
-        msg_id = esp_mqtt_client_subscribe(client, "/stu_161/lamp1", 0);
-        msg_id = esp_mqtt_client_subscribe(client, "/stu_161/lamp2", 0);
-        msg_id = esp_mqtt_client_subscribe(client, "/stu_161/lamp3", 0);
-        ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
+        // // เพิ่มบรรทัดต่อไปนี้ โดยตั้งขื่อเป็น stu-<เลข 3 ตัวท้ายของรหัสนักศึกษา>
+        // msg_id = esp_mqtt_client_subscribe(client, "/stu_161/lamp1", 0);
+        // msg_id = esp_mqtt_client_subscribe(client, "/stu_161/lamp2", 0);
+        // msg_id = esp_mqtt_client_subscribe(client, "/stu_161/lamp3", 0);
+        // ESP_LOGI(TAG, "sent subscribe successful, msg_id=%d", msg_id);
         break;
     case MQTT_EVENT_DISCONNECTED:
         ESP_LOGI(TAG, "MQTT_EVENT_DISCONNECTED");
@@ -102,36 +154,6 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "MQTT_EVENT_DATA");
         printf("TOPIC=%.*s\r\n", event->topic_len, event->topic);
         printf("DATA=%.*s\r\n", event->data_len, event->data);
-
-        if (strncmp(event->topic, "/stu_161/lamp1", event->topic_len) == 0) // if topic is "/stu_999/lamp1" then result = 0
-        {
-            ESP_LOGI(TAG, "event->topic = /stu_161/lamp1");
-            if (strncmp(event->data, "1", event->data_len) == 0) // if data is "1" then result = 0
-            {
-                ESP_LOGI(TAG, "Turn on LED1");
-                gpio_set_level(LED1, 1);
-            }
-            if (strncmp(event->data, "0", event->data_len) == 0) // if data is "0" then result = 0
-            {
-                ESP_LOGI(TAG, "Turn off LED1");
-                gpio_set_level(LED1, 0);
-            }
-        }
-
-        if (strncmp(event->topic, "/stu_161/lamp2", event->topic_len) == 0) // if topic is "/stu_999/lamp1" then result = 0
-        {
-            ESP_LOGI(TAG, "event->topic = /stu_161/lamp2");
-            if (strncmp(event->data, "1", event->data_len) == 0) // if data is "1" then result = 0
-            {
-                ESP_LOGI(TAG, "Turn on LED2");
-                gpio_set_level(LED2, 1);
-            }
-            if (strncmp(event->data, "0", event->data_len) == 0) // if data is "0" then result = 0
-            {
-                ESP_LOGI(TAG, "Turn off LED2");
-                gpio_set_level(LED2, 0);
-            }
-        }
 
         break;
     case MQTT_EVENT_ERROR:
@@ -191,15 +213,41 @@ static void mqtt_app_start(void)
     /* The last argument may be used to pass data to the event handler, in this example mqtt_event_handler */
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);
+    mqtt_client = client;
 }
 
 void app_main(void)
 {
 
-    gpio_reset_pin(LED1);
-    gpio_reset_pin(LED2);
-    gpio_set_direction(LED1, GPIO_MODE_OUTPUT);
-    gpio_set_direction(LED2, GPIO_MODE_OUTPUT);
+    // LED config as I/O port
+    gpio_pad_select_gpio(LED1_PIN);
+    gpio_set_direction(LED1_PIN, GPIO_MODE_INPUT_OUTPUT);
+    gpio_pad_select_gpio(LED2_PIN);
+    gpio_set_direction(LED2_PIN, GPIO_MODE_INPUT_OUTPUT);
+
+    // config Input No 21 for external interrupt input
+    gpio_pad_select_gpio(BUTTON1_PIN);
+    gpio_set_direction(BUTTON1_PIN, GPIO_MODE_INPUT);
+    gpio_pulldown_en(BUTTON1_PIN);
+    gpio_pullup_dis(BUTTON1_PIN);
+    gpio_set_intr_type(BUTTON1_PIN, GPIO_INTR_POSEDGE);
+
+    gpio_pad_select_gpio(BUTTON2_PIN);
+    gpio_set_direction(BUTTON2_PIN, GPIO_MODE_INPUT);
+    gpio_pulldown_en(BUTTON2_PIN);
+    gpio_pullup_dis(BUTTON2_PIN);
+    gpio_set_intr_type(BUTTON2_PIN, GPIO_INTR_POSEDGE);
+
+    // FreeRTOS tas and queue
+    interputQueue1 = xQueueCreate(10, sizeof(int));
+    interputQueue2 = xQueueCreate(10, sizeof(int));
+    xTaskCreate(LED_Control_Task, "LED_Control_Task", 2048, NULL, 1, NULL);
+    xTaskCreate(LED2_Control_Task, "LED2_Control_Task", 2048, NULL, 1, NULL);
+
+    // install isr service and isr handler
+    gpio_install_isr_service(0);
+    gpio_isr_handler_add(BUTTON1_PIN, gpio_interrupt_handler, (void *)BUTTON1_PIN);
+    gpio_isr_handler_add(BUTTON2_PIN, gpio_interrupt_handler2, (void *)BUTTON2_PIN);
 
     ESP_LOGI(TAG, "[APP] Startup..");
     ESP_LOGI(TAG, "[APP] Free memory: %d bytes", esp_get_free_heap_size());
